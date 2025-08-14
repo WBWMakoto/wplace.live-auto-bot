@@ -3,19 +3,22 @@
  *
  * HOW TO RUN (no build, no install):
  * 1) Open https://wplace.live in your browser
- * 2) Press F12 → switch to Console
- * 3) Paste this ENTIRE FILE and press Enter
+ * 2) Press F12 → Console
+ * 3) Paste THIS ENTIRE FILE and press Enter
  * 4) In the same console, use the commands it prints (see wplaceBot.printHelp())
  *
- * TIP:
+ * NOTES:
  * - Keep your zoom/pan fixed while the bot is running.
  * - Set start position to the top-left corner where your image should begin.
  *
- * DONATION (optional, as requested by the author):
+ * DONATION (optional):
  * If this helps you, consider buying the dev a coffee ❤️
  * PayPal: https://paypal.me/wibuwonderland
- * Donors can request a “Pro” build with multi-section (multiple images/queues) support
- * and ongoing improvements.
+ * Donors can request a “Pro” build (multi-section/queues, QoL upgrades) and support ongoing improvements.
+ *
+ * ABOUT / CREDITS:
+ * English version with improvements, partially inspired by ideas and concepts from https://wplacebot.online
+ * No need to run 24/7 for large images — the bot saves progress automatically (see printHelp / README).
  */
 
 class WPlaceBot {
@@ -31,13 +34,18 @@ class WPlaceBot {
     this.colorPalette = [];       // [{element, color:"rgb(r,g,b)"}...]
     this.selectedColor = '#000000';
 
+    // Color mode
+    this.useAutoPalette = true;   // try to auto-pick closest color
+    this._autoWarned = false;     // internal: warn once when palette missing
+
     // ---------- PERSISTENCE ----------
     this.imageName = 'Custom Image';
     this.stateKey = 'WPLACE_BOT_STATE_V1'; // change if you want a different “profile”
     this.autosaveEvery = 20;               // autosave progress every N pixels
+    this.largeSaveCap = 50000;             // cap saved pixels to keep JSON reasonable
 
     // ---------- VERSION ----------
-    this.version = '1.2.0';
+    this.version = '1.3.0';
   }
 
   // Initialize: find canvas/palette, optionally restore previous session, print help
@@ -73,18 +81,41 @@ class WPlaceBot {
     console.error('❌ Canvas not found. Make sure you are on wplace.live and the board is visible.');
   }
 
+  /**
+   * Safe palette discovery: prefer elements that explicitly carry a color attribute.
+   * Call this again after you open the color picker/palette in the UI.
+   */
   findColorPalette() {
-    // This is intentionally broad; you may tighten it if you know the exact DOM.
-    const candidates = document.querySelectorAll(
-      '[style*="background-color"], .color, [data-color], .palette-color'
-    );
-    for (const el of candidates) {
-      const bg = getComputedStyle(el).backgroundColor;
-      if (bg && bg !== 'rgba(0, 0, 0, 0)') {
-        this.colorPalette.push({ element: el, color: bg });
-      }
+    this.colorPalette = [];
+    const root =
+      document.querySelector('[data-testid="palette"]') ||
+      document.querySelector('.palette, .color-palette') ||
+      document; // fallback
+
+    // Prefer explicit color-bearing nodes
+    const strict = root.querySelectorAll('[data-color], button[data-color], [role="radio"][data-color]');
+    if (strict.length > 0) {
+      strict.forEach(el => {
+        const bg = getComputedStyle(el).backgroundColor;
+        if (bg && bg !== 'rgba(0,0,0,0)') this.colorPalette.push({ element: el, color: bg });
+      });
+    } else {
+      // Fallback: broader (still filtered by bg color so it's not crazy-wide)
+      const candidates = root.querySelectorAll('[style*="background-color"], .color, .palette-color');
+      candidates.forEach(el => {
+        const bg = getComputedStyle(el).backgroundColor;
+        if (bg && bg !== 'rgba(0,0,0,0)') this.colorPalette.push({ element: el, color: bg });
+      });
     }
-    console.log(`✅ Palette entries found: ${this.colorPalette.length}`);
+
+    console.log(`🎨 Palette entries found: ${this.colorPalette.length}`);
+    if (this.colorPalette.length === 0) {
+      console.warn('ℹ️ No palette detected. Open the color picker/palette in the UI, then run: wplaceBot.refreshPalette()');
+    }
+  }
+
+  refreshPalette() {
+    this.findColorPalette();
   }
 
   // ---------- COLOR HELPERS ----------
@@ -134,9 +165,9 @@ class WPlaceBot {
    * Set the top-left position where your image starts (screen-space, relative to visible canvas)
    */
   setStartPosition(x, y) {
-    this.startX = x;
-    this.startY = y;
-    console.log(`📍 Start position set to (${x}, ${y})`);
+    this.startX = x | 0;
+    this.startY = y | 0;
+    console.log(`📍 Start position set to (${this.startX}, ${this.startY})`);
     this.saveState();
   }
 
@@ -144,9 +175,14 @@ class WPlaceBot {
    * Set delay between pixels (ms)
    */
   setDelay(ms) {
-    this.delay = ms;
-    console.log(`⏱️ Delay set to ${ms} ms`);
+    this.delay = Math.max(0, ms | 0);
+    console.log(`⏱️ Delay set to ${this.delay} ms`);
     this.saveState();
+  }
+
+  setManualColorMode(on = true) {
+    this.useAutoPalette = !on;
+    console.log(`🎛️ Manual color mode: ${on ? 'ON' : 'OFF'}`);
   }
 
   // ---------- CLICK ----------
@@ -185,7 +221,7 @@ class WPlaceBot {
     this.currentPixel = 0;
     this.imageName = 'Simple Image';
     console.log(`📷 Image loaded: ${width}×${height} (${out.length} px)`);
-    this.saveState();
+    this.saveStateLight();
     return true;
   }
 
@@ -218,7 +254,12 @@ class WPlaceBot {
         return false;
       }
 
-      norm.push({ x: Math.floor(p.x), y: Math.floor(p.y), color });
+      const x = Math.floor(p.x), y = Math.floor(p.y);
+      if (x < 0 || y < 0 || !Number.isFinite(x) || !Number.isFinite(y)) {
+        console.error('❌ x/y must be non-negative finite integers');
+        return false;
+      }
+      norm.push({ x, y, color });
     }
 
     // Deduplicate by (x,y), keep last definition
@@ -230,9 +271,20 @@ class WPlaceBot {
     this.currentPixel = 0;
     this.imageName = name;
 
-    const maxX = Math.max(...dedup.map(p => p.x)), maxY = Math.max(...dedup.map(p => p.y));
+    // SAFE maxX/maxY (no giant spread)
+    let maxX = -Infinity, maxY = -Infinity;
+    for (const p of dedup) { if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y; }
+    maxX = (maxX === -Infinity) ? 0 : maxX;
+    maxY = (maxY === -Infinity) ? 0 : maxY;
+
     console.log(`✅ ${name} loaded: ${dedup.length} px | approx size: ${maxX + 1}×${maxY + 1}`);
-    this.saveState();
+
+    // For huge images, avoid heavy initial save. Autosave will happen during drawing.
+    if (dedup.length <= this.largeSaveCap) {
+      this.saveState();
+    } else {
+      console.log('💾 Large image detected — skipping initial save to keep things responsive. Progress will autosave as you draw.');
+    }
     return true;
   }
 
@@ -294,6 +346,15 @@ class WPlaceBot {
     if (!this.pixels.length) { console.log('⚠️ Load an image first'); return; }
     if (!this.canvas) { console.log('⚠️ Canvas not found'); return; }
 
+    // Palette handling
+    if (this.useAutoPalette && this.colorPalette.length === 0) {
+      if (!this._autoWarned) {
+        console.warn('🎨 No palette detected. Switching to Manual Color Mode. Select a color in the UI; the bot will not attempt to change colors automatically.');
+        this._autoWarned = true;
+      }
+      this.useAutoPalette = false; // fallback to manual
+    }
+
     this.isRunning = true;
     console.log(`🚀 Bot started (${this.imageName}) from pixel #${this.currentPixel + 1}/${this.pixels.length}`);
 
@@ -301,10 +362,22 @@ class WPlaceBot {
       const p = this.pixels[this.currentPixel];
       const x = this.startX + p.x, y = this.startY + p.y;
 
-      if (this.selectColor(p.color)) {
-        await this.sleep(200); // small pause after color pick
-        this.clickCanvas(x, y);
+      if (this.useAutoPalette) {
+        const ok = this.selectColor(p.color);
+        if (!ok && !this._autoWarned) {
+          console.warn('🎨 Could not select color automatically. Switching to Manual Color Mode. Pick a color in the UI.');
+          this._autoWarned = true;
+          this.useAutoPalette = false;
+        }
+        if (!this.useAutoPalette) {
+          // falls through to manual click below
+        } else {
+          await this.sleep(200); // small pause after color pick
+        }
       }
+
+      // Manual mode or after auto pick
+      this.clickCanvas(x, y);
 
       this.currentPixel++;
 
@@ -345,6 +418,7 @@ class WPlaceBot {
   // ---------- PERSISTENCE ----------
   saveState() {
     try {
+      const remaining = this.pixels.slice(this.currentPixel);
       const state = {
         version: 1,
         imageName: this.imageName,
@@ -353,12 +427,34 @@ class WPlaceBot {
         delay: this.delay,
         currentPixel: this.currentPixel,
         totalPixels: this.pixels.length,
-        remaining: this.pixels.slice(this.currentPixel), // memory-efficient resume
+        // Cap remaining to avoid massive JSON on huge images;
+        // it's okay because we keep autosaving while drawing.
+        remaining: remaining.length > this.largeSaveCap ? remaining.slice(0, this.largeSaveCap) : remaining,
         savedAt: Date.now()
       };
       localStorage.setItem(this.stateKey, JSON.stringify(state));
     } catch (e) {
       console.warn('⚠️ saveState failed:', e);
+    }
+  }
+
+  // Lighter save (for small images / initial logs)
+  saveStateLight() {
+    try {
+      const state = {
+        version: 1,
+        imageName: this.imageName,
+        startX: this.startX,
+        startY: this.startY,
+        delay: this.delay,
+        currentPixel: this.currentPixel,
+        totalPixels: this.pixels.length,
+        remaining: this.pixels.slice(this.currentPixel, this.currentPixel + Math.min(this.largeSaveCap, this.pixels.length)),
+        savedAt: Date.now()
+      };
+      localStorage.setItem(this.stateKey, JSON.stringify(state));
+    } catch (e) {
+      console.warn('⚠️ saveStateLight failed:', e);
     }
   }
 
@@ -395,14 +491,16 @@ class WPlaceBot {
     console.log(`
 📚 WPlaceBot Quick Commands
 ---------------------------
-wplaceBot.setStartPosition(x, y)   // set top-left where the image will start
-wplaceBot.setDelay(ms)             // e.g. 300..1000; slower is safer
-wplaceBot.loadImageFromData(data, name)
+wplaceBot.setStartPosition(x, y)       // set top-left where the image will start
+wplaceBot.setDelay(ms)                 // e.g. 300..1000; slower is safer
+wplaceBot.loadImageFromData(data, name)// data = [{x,y,color:"#RRGGBB"|rgb()}...]
 wplaceBot.loadImageFromUrl(url, maxW, maxH, name)
-wplaceBot.start()                  // start drawing
-wplaceBot.stop()                   // stop & save
-wplaceBot.resume()                 // continue from saved progress
-wplaceBot.clearState()             // wipe saved progress
+wplaceBot.refreshPalette()             // re-scan palette after opening color picker
+wplaceBot.setManualColorMode(true)     // manual mode: bot won't change color
+wplaceBot.start()                      // start drawing
+wplaceBot.stop()                       // stop & save
+wplaceBot.resume()                     // continue from saved progress
+wplaceBot.clearState()                 // wipe saved progress
 
 Example:
 const data = [];
@@ -411,6 +509,12 @@ wplaceBot.loadImageFromData(data, 'Red 5x5');
 wplaceBot.setStartPosition(120,300);
 wplaceBot.setDelay(300);
 wplaceBot.start();
+
+ℹ️ If you see "Palette entries found: 0", open the color picker on the page, then run:
+wplaceBot.refreshPalette();
+(Or switch to manual color mode: wplaceBot.setManualColorMode(true) and select a color yourself.)
+
+💾 Progress is saved in localStorage under key: ${this.stateKey}
 `);
   }
 
