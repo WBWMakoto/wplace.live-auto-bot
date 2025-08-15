@@ -106,3 +106,7 @@ Donors can request a **“Pro” build** that supports:
 ## License
 Personal use permitted. Provided “as is”, without warranty. You’re responsible for any ToS or rate-limit issues that arise from use.
 
+---
+
+## Status 
+Every version from this and other developers (including this) can be outdated due to Wplace's unusual status (auto end section), and the site has improved its anti-bot system
