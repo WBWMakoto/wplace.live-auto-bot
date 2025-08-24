@@ -1,4 +1,4 @@
-# WPlaceBot – Automated Pixel Drawing for wplace.live
+# WPlaceBot – Automated Pixel Drawing for wplace.live (Code is outdate, [please read here](https://github.com/WBWMakoto/wplace.live-auto-bot/blob/main/README.md#status) for details, tysm!)
 
 ## Overview
 WPlaceBot is a single-file JavaScript tool you paste into your browser’s **Developer Console** to automate pixel placement on [wplace.live](https://wplace.live). It converts images to pixel data, picks the closest palette color, and clicks pixels one by one.
